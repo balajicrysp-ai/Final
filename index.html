@@ -2708,7 +2708,10 @@ function renderTreesCost() {
     const block = state.trees.find(t =>
       keywords.some(k => t.name.toLowerCase().includes(k))
     );
-    return block && block.photos && block.photos.length > 0 ? block.photos[0].src : null;
+    if (!block || !block.photos || !block.photos.length) return null;
+    const p = block.photos[0];
+    // Support both object {src:...} and plain URL string
+    return (p && typeof p === 'object') ? (p.src || null) : (typeof p === 'string' ? p : null);
   }
 
   // Calculate number of months spanned by finance entries
@@ -4525,59 +4528,90 @@ function downloadFinanceTemplateClick() {
 const STORAGE_KEY = 'farmdesk_v1';
 
 function saveState() {
+  // Cloudinary photos are URL strings — always safe to save.
+  // Guard against localStorage quota by saving in sections if needed.
+  const toSave = {
+    trees:               state.trees,
+    fields:              state.fields,
+    tasks:               state.tasks,
+    inventory:           state.inventory,
+    finance:             state.finance,
+    calendar:            state.calendar,
+    diary:               state.diary,
+    farmName:            state.farmName,
+    weatherLocation:     state.weatherLocation,
+    weatherLocationFull: state.weatherLocationFull,
+    taskFilter:          state.taskFilter,
+    inventoryFilter:     state.inventoryFilter,
+    nextId,
+  };
   try {
-    const toSave = {
-      trees:     state.trees,
-      fields:    state.fields,
-      tasks:     state.tasks,
-      inventory: state.inventory,
-      finance:   state.finance,
-      calendar:  state.calendar,
-      diary:     state.diary,
-      farmName:  state.farmName,
-      weatherLocation:     state.weatherLocation,
-      weatherLocationFull: state.weatherLocationFull,
-      taskFilter:      state.taskFilter,
-      inventoryFilter: state.inventoryFilter,
-      nextId,
-    };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
     showSaveIndicator();
   } catch(e) {
+    // Quota hit — save each section separately so photos are never silently dropped
+    console.warn('saveState quota hit, saving per-section:', e);
+    const sections = ['trees','fields','tasks','inventory','finance','calendar','diary'];
+    let saved = 0;
+    for (const key of sections) {
+      try { localStorage.setItem(STORAGE_KEY + '_' + key, JSON.stringify(toSave[key])); saved++; }
+      catch(e2) { console.warn('Could not save section', key, e2); }
+    }
     try {
-      const toSave = {
-        trees:     state.trees,
-        fields:    state.fields,
-        tasks:     state.tasks, inventory: state.inventory,
-        finance:   state.finance, calendar: state.calendar,
-        diary:     state.diary,  farmName:  state.farmName,
-        weatherLocation: state.weatherLocation,
-        weatherLocationFull: state.weatherLocationFull,
-        nextId,
-      };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
-      showSaveIndicator('⚠ Saved (photos skipped)');
-    } catch(e2) { console.warn('Could not save:', e2); }
+      localStorage.setItem(STORAGE_KEY + '_meta', JSON.stringify({
+        farmName: toSave.farmName,
+        weatherLocation: toSave.weatherLocation,
+        weatherLocationFull: toSave.weatherLocationFull,
+        taskFilter: toSave.taskFilter,
+        inventoryFilter: toSave.inventoryFilter,
+        nextId: toSave.nextId,
+      }));
+    } catch(e3) {}
+    showSaveIndicator(saved > 0 ? '✅ Saved (split mode)' : '⚠️ Storage full — sync to Firebase!');
   }
 }
 
 function loadState() {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) return false;
-    const data = JSON.parse(saved);
-    if (data.trees)     state.trees     = data.trees;
-    if (data.fields)    state.fields    = data.fields;
-    if (data.tasks)     state.tasks     = data.tasks;
-    if (data.inventory) state.inventory = data.inventory;
-    if (data.finance)   state.finance   = data.finance;
-    if (data.calendar)  state.calendar  = data.calendar;
-    if (data.diary)     state.diary     = data.diary;
-    if (data.farmName)  state.farmName  = data.farmName;
-    if (data.weatherLocation)     state.weatherLocation     = data.weatherLocation;
-    if (data.weatherLocationFull) state.weatherLocationFull = data.weatherLocationFull;
-    if (data.nextId)    nextId = data.nextId;
-    return true;
+    if (saved) {
+      // Normal unified save — preferred path
+      const data = JSON.parse(saved);
+      if (data.trees)               state.trees               = data.trees;
+      if (data.fields)              state.fields              = data.fields;
+      if (data.tasks)               state.tasks               = data.tasks;
+      if (data.inventory)           state.inventory           = data.inventory;
+      if (data.finance)             state.finance             = data.finance;
+      if (data.calendar)            state.calendar            = data.calendar;
+      if (data.diary)               state.diary               = data.diary;
+      if (data.farmName)            state.farmName            = data.farmName;
+      if (data.weatherLocation)     state.weatherLocation     = data.weatherLocation;
+      if (data.weatherLocationFull) state.weatherLocationFull = data.weatherLocationFull;
+      if (data.taskFilter)          state.taskFilter          = data.taskFilter;
+      if (data.inventoryFilter)     state.inventoryFilter     = data.inventoryFilter;
+      if (data.nextId)              nextId                    = data.nextId;
+      return true;
+    }
+    // Fallback: try split-section keys (written when quota was hit)
+    const sections = ['trees','fields','tasks','inventory','finance','calendar','diary'];
+    let loaded = 0;
+    for (const key of sections) {
+      const raw = localStorage.getItem(STORAGE_KEY + '_' + key);
+      if (raw) { try { state[key] = JSON.parse(raw); loaded++; } catch(e) {} }
+    }
+    const metaRaw = localStorage.getItem(STORAGE_KEY + '_meta');
+    if (metaRaw) {
+      try {
+        const meta = JSON.parse(metaRaw);
+        if (meta.farmName)            state.farmName            = meta.farmName;
+        if (meta.weatherLocation)     state.weatherLocation     = meta.weatherLocation;
+        if (meta.weatherLocationFull) state.weatherLocationFull = meta.weatherLocationFull;
+        if (meta.taskFilter)          state.taskFilter          = meta.taskFilter;
+        if (meta.inventoryFilter)     state.inventoryFilter     = meta.inventoryFilter;
+        if (meta.nextId)              nextId                    = meta.nextId;
+      } catch(e) {}
+    }
+    return loaded > 0;
   } catch(e) { console.warn('Could not load:', e); return false; }
 }
 
