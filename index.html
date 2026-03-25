@@ -1595,6 +1595,7 @@
 <script>
 // ============ STATE ============
 let state = {
+  treeCostPhotos: {}, // keyed by TREE_NAMES value → Cloudinary photo object
   trees: [
     {id:201, name:'Mango Orchard – North', area:5.0, species:'Alphonso Mango', count:120, bearing:90, young:30, age:10, plantyear:2015, spacing:'20×20', irrigation:'Drip', status:'Bearing', season:'May–Jul', notes:'Top grafted; high yield variety', photos:[]},
     {id:202, name:'Coconut Block – East', area:4.5, species:'West Coast Tall Coconut', count:200, bearing:180, young:20, age:15, plantyear:2010, spacing:'25×25', irrigation:'Drip', status:'Bearing', season:'Year-round', notes:'Intercrop with banana', photos:[]},
@@ -2704,13 +2705,19 @@ function renderTreesCost() {
   }
 
   function getTreePhoto(treeName) {
+    // 1. Check dedicated treeCostPhotos store first (set via upload button on cost card)
+    const dedicated = state.treeCostPhotos && state.treeCostPhotos[treeName];
+    if (dedicated) {
+      const src = (dedicated && typeof dedicated === 'object') ? dedicated.src : dedicated;
+      if (src) return src;
+    }
+    // 2. Fallback: keyword-match against state.trees records
     const keywords = TREE_KEYWORDS[treeName] || [];
     const block = state.trees.find(t =>
       keywords.some(k => t.name.toLowerCase().includes(k))
     );
     if (!block || !block.photos || !block.photos.length) return null;
     const p = block.photos[0];
-    // Support both object {src:...} and plain URL string
     return (p && typeof p === 'object') ? (p.src || null) : (typeof p === 'string' ? p : null);
   }
 
@@ -2779,13 +2786,26 @@ function renderTreesCost() {
     const maintPerTree = count > 0 && numMonths > 0 ? c.maintenance / numMonths / count : 0;
     const pct = totalAllocated > 0 ? (c.total / totalAllocated * 100).toFixed(1) : '0.0';
     const color = colors[tree] || 'var(--green-mid)';
+    const treeKey = encodeURIComponent(tree);
 
     html += `<div class="card" style="border-left:4px solid ${color};padding:0;overflow:hidden;">
-      ${photo ? `
-      <div style="width:100%;height:140px;overflow:hidden;position:relative;">
-        <img src="${photo}" alt="${tree}" style="width:100%;height:100%;object-fit:cover;display:block;"/>
-        <div style="position:absolute;inset:0;background:linear-gradient(to bottom,transparent 40%,rgba(0,0,0,0.6));"></div>
-        <div style="position:absolute;bottom:8px;left:12px;right:12px;display:flex;justify-content:space-between;align-items:flex-end;">
+      <!-- Photo banner (always shown — click to change) -->
+      <div style="width:100%;height:140px;overflow:hidden;position:relative;background:linear-gradient(135deg,${color}22,${color}44);cursor:pointer;"
+           onclick="triggerTreeCostPhotoUpload('${treeKey}')">
+        ${photo
+          ? `<img src="${photo}" alt="${tree}" style="width:100%;height:100%;object-fit:cover;display:block;"
+                  onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"/>
+             <div style="display:none;width:100%;height:100%;align-items:center;justify-content:center;flex-direction:column;gap:6px;">
+               <span style="font-size:2rem;">📷</span>
+               <span style="font-size:0.72rem;color:${color};font-weight:600;">Tap to add photo</span>
+             </div>`
+          : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;">
+               <span style="font-size:2.2rem;">📷</span>
+               <span style="font-size:0.72rem;color:${color};font-weight:600;">Tap to add photo</span>
+             </div>`
+        }
+        <div style="position:absolute;inset:0;background:linear-gradient(to bottom,transparent 40%,rgba(0,0,0,0.6));pointer-events:none;"></div>
+        <div style="position:absolute;bottom:8px;left:12px;right:12px;display:flex;justify-content:space-between;align-items:flex-end;pointer-events:none;">
           <div>
             <div style="font-weight:700;font-size:1rem;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.5);">${tree}</div>
             <div style="font-size:0.7rem;color:rgba(255,255,255,0.85);">${count} trees · ${pct}% of total</div>
@@ -2794,18 +2814,14 @@ function renderTreesCost() {
             ₹${Math.round(c.total).toLocaleString('en-IN')}
           </div>
         </div>
+        <!-- Change photo button overlay -->
+        <button onclick="event.stopPropagation();triggerTreeCostPhotoUpload('${treeKey}')"
+                style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,0.45);border:none;border-radius:20px;color:#fff;font-size:0.68rem;padding:3px 8px;cursor:pointer;">
+          ${photo ? '🔄 Change' : '📷 Add'}
+        </button>
       </div>
-      <div style="padding:12px 14px;">` : `
-      <div style="padding:14px;">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
-        <div>
-          <div style="font-weight:700;font-size:1rem;">${tree}</div>
-          <div style="font-size:0.72rem;color:var(--text-muted);">${count} trees · ${pct}% of total</div>
-        </div>
-        <div style="font-size:1.4rem;font-weight:700;color:${color};font-family:'Playfair Display',serif;">
-          ₹${Math.round(c.total).toLocaleString('en-IN')}
-        </div>
-      </div>`}
+      <!-- Card body -->
+      <div style="padding:12px 14px;">
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;border-top:1px solid var(--border);padding-top:10px;">
         <div style="text-align:center;">
           <div style="font-size:0.6rem;color:var(--text-muted);text-transform:uppercase;margin-bottom:2px;">Cost/Tree</div>
@@ -3537,6 +3553,29 @@ function triggerTreePhotoUpload(treeId) {
     }
     renderTrees(); autoSave();
     showSaveIndicator(`✅ ${uploaded} photo(s) saved to Cloudinary`);
+  };
+  inp.click();
+}
+
+// Upload a photo directly to a Trees Cost card (stored in state.treeCostPhotos)
+function triggerTreeCostPhotoUpload(treeKey) {
+  const treeName = decodeURIComponent(treeKey);
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = 'image/*'; inp.multiple = false;
+  inp.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    showSaveIndicator('☁ Uploading photo for ' + treeName + '...');
+    try {
+      const photo = await uploadToCloudinary(file, 'treescost/' + treeName.replace(/[^a-z0-9]/gi,'_'));
+      if (!state.treeCostPhotos) state.treeCostPhotos = {};
+      state.treeCostPhotos[treeName] = photo;
+      autoSave();
+      renderTreesCost();
+      showSaveIndicator('✅ Photo saved for ' + treeName);
+    } catch(err) {
+      showSaveIndicator('⚠ Upload failed: ' + err.message);
+    }
   };
   inp.click();
 }
@@ -4531,6 +4570,7 @@ function saveState() {
   // Cloudinary photos are URL strings — always safe to save.
   // Guard against localStorage quota by saving in sections if needed.
   const toSave = {
+    treeCostPhotos:      state.treeCostPhotos,
     trees:               state.trees,
     fields:              state.fields,
     tasks:               state.tasks,
@@ -4577,7 +4617,8 @@ function loadState() {
     if (saved) {
       // Normal unified save — preferred path
       const data = JSON.parse(saved);
-      if (data.trees)               state.trees               = data.trees;
+      if (data.treeCostPhotos)      state.treeCostPhotos      = data.treeCostPhotos || {};
+    if (data.trees)               state.trees               = data.trees;
       if (data.fields)              state.fields              = data.fields;
       if (data.tasks)               state.tasks               = data.tasks;
       if (data.inventory)           state.inventory           = data.inventory;
@@ -4609,6 +4650,7 @@ function loadState() {
         if (meta.taskFilter)          state.taskFilter          = meta.taskFilter;
         if (meta.inventoryFilter)     state.inventoryFilter     = meta.inventoryFilter;
         if (meta.nextId)              nextId                    = meta.nextId;
+        if (meta.treeCostPhotos)      state.treeCostPhotos      = meta.treeCostPhotos || {};
       } catch(e) {}
     }
     return loaded > 0;
@@ -4776,7 +4818,7 @@ async function syncToFirebase() {
   try {
     // Step 1 — Pull latest from Firebase first
     showSaveIndicator('☁ Loading from Firebase...');
-    const sections = ['trees','fields','tasks','inventory','finance','diary','calendar'];
+    const sections = ['treeCostPhotos','trees','fields','tasks','inventory','finance','diary','calendar'];
     for (const section of sections) {
       const remote = await fbRead(section);
       if (remote && Array.isArray(remote) && remote.length > 0) {
@@ -4803,6 +4845,7 @@ async function syncToFirebase() {
     // Photos are Cloudinary URLs (tiny strings) — safe to sync
     showSaveIndicator('🔥 Pushing to Firebase...');
     await fbWrite('meta',      { farmName: state.farmName || 'My Farm', version: '2.0.0', lastSync: new Date().toISOString() });
+    await fbWrite('treeCostPhotos', state.treeCostPhotos);
     await fbWrite('trees',     state.trees);
     await fbWrite('fields',    state.fields);
     await fbWrite('tasks',     state.tasks);
