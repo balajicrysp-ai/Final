@@ -5055,6 +5055,10 @@ document.addEventListener('DOMContentLoaded', function() {
       <div style="color:#fff;font-weight:700;font-size:0.95rem;">Farm AI Analyst</div>
       <div style="color:rgba(255,255,255,0.8);font-size:0.7rem;">Ask anything about your farm data</div>
     </div>
+    <button onclick="showAIKeySetup()" title="Set API Key" id="ai-key-btn"
+      style="background:rgba(255,255,255,0.18);border:none;color:#fff;border-radius:8px;padding:4px 8px;cursor:pointer;font-size:0.72rem;">
+      ⚙ API Key
+    </button>
     <button onclick="clearAIChat()" title="Clear chat"
       style="background:rgba(255,255,255,0.18);border:none;color:#fff;border-radius:8px;padding:4px 8px;cursor:pointer;font-size:0.72rem;">
       🗑 Clear
@@ -5162,7 +5166,14 @@ function toggleAIPanel() {
   const panel = document.getElementById('ai-panel');
   panel.classList.toggle('open', aiPanelOpen);
   if (aiPanelOpen && !aiInitialised) { initAIChat(); }
-  if (aiPanelOpen) { setTimeout(()=>document.getElementById('ai-input').focus(), 100); }
+  if (aiPanelOpen) {
+    setTimeout(()=>document.getElementById('ai-input').focus(), 100);
+    setTimeout(updateKeyIndicator, 50);
+    // If no key yet, show setup automatically on first open
+    if (!localStorage.getItem('farmdesk_claude_key')) {
+      setTimeout(showAIKeySetup, 400);
+    }
+  }
 }
 
 function initAIChat() {
@@ -5299,10 +5310,27 @@ ${buildFarmContext()}`;
   // Keep last 10 turns to avoid token overflow
   const historyToSend = aiChatHistory.slice(-10);
 
+  // Get API key — from localStorage or prompt user
+  let apiKey = localStorage.getItem('farmdesk_claude_key') || '';
+  if (!apiKey) {
+    removeThinkingIndicator();
+    showAIKeySetup();
+    // Re-queue the question so it fires after key is saved
+    document.getElementById('ai-input').value = question;
+    aiChatHistory.pop(); // remove the user turn we just added
+    document.getElementById('ai-send-btn').disabled = false;
+    return;
+  }
+
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1500,
@@ -5312,7 +5340,14 @@ ${buildFarmContext()}`;
     });
 
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error?.message || 'API error ' + res.status);
+    if (!res.ok) {
+      // If 401, clear bad key and ask again
+      if (res.status === 401) {
+        localStorage.removeItem('farmdesk_claude_key');
+        throw new Error('Invalid API key — please re-enter it.');
+      }
+      throw new Error(data.error?.message || 'API error ' + res.status);
+    }
 
     const rawText = data.content.map(c=>c.text||'').join('');
 
@@ -5324,7 +5359,14 @@ ${buildFarmContext()}`;
 
   } catch(err) {
     removeThinkingIndicator();
-    addAIMessage('bot', `⚠️ <strong>Error:</strong> ${err.message}<br><small>Check your connection and try again.</small>`);
+    addAIMessage('bot',
+      `⚠️ <strong>Error:</strong> ${err.message}<br>
+       <small style="color:#888">
+         ${err.message.includes('key') || err.message.includes('401')
+           ? 'Tap <strong>⚙ API Key</strong> to update your key.'
+           : 'Check your connection and try again.'}
+       </small>`
+    );
   }
 
   document.getElementById('ai-send-btn').disabled = false;
@@ -5399,6 +5441,108 @@ function ensureChartJS(cb) {
   s.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js';
   s.onload = cb;
   document.head.appendChild(s);
+}
+
+// ── API Key Setup ─────────────────────────────────────────────
+function showAIKeySetup() {
+  const existing = localStorage.getItem('farmdesk_claude_key') || '';
+  // Inject overlay if not present
+  let overlay = document.getElementById('ai-key-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'ai-key-overlay';
+    overlay.style.cssText = `
+      position:fixed;inset:0;z-index:10000;
+      background:rgba(0,0,0,0.55);backdrop-filter:blur(4px);
+      display:flex;align-items:center;justify-content:center;padding:20px;
+    `;
+    overlay.innerHTML = `
+      <div style="background:#fff;border-radius:16px;padding:24px;max-width:420px;width:100%;
+                  box-shadow:0 16px 48px rgba(0,0,0,0.28);">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+          <span style="font-size:1.8rem;">🔑</span>
+          <div>
+            <div style="font-weight:700;font-size:1rem;color:#1e4d1a;">Anthropic API Key</div>
+            <div style="font-size:0.72rem;color:#888;">Required for AI Analyst features</div>
+          </div>
+        </div>
+        <div style="background:#f0f7f1;border-radius:10px;padding:12px 14px;font-size:0.78rem;
+                    color:#2d6627;margin-bottom:16px;line-height:1.6;">
+          1. Go to <a href="https://console.anthropic.com/settings/keys" target="_blank"
+             style="color:#1a8ed1;font-weight:600;">console.anthropic.com</a><br>
+          2. Create an API key (free tier available)<br>
+          3. Paste it below — stored only on this device
+        </div>
+        <input id="ai-key-input" type="password"
+          placeholder="sk-ant-api03-..."
+          style="width:100%;border:1.5px solid #d1e7da;border-radius:10px;padding:10px 12px;
+                 font-size:0.85rem;font-family:'Outfit',sans-serif;box-sizing:border-box;
+                 outline:none;margin-bottom:12px;"
+          value="${existing}"
+        />
+        <div style="display:flex;gap:8px;">
+          <button onclick="saveAIKey()"
+            style="flex:1;background:linear-gradient(135deg,#1e7e34,#2db34a);border:none;
+                   color:#fff;border-radius:10px;padding:10px;font-size:0.85rem;
+                   font-weight:600;cursor:pointer;font-family:'Outfit',sans-serif;">
+            ✅ Save & Start Chatting
+          </button>
+          <button onclick="document.getElementById('ai-key-overlay').remove()"
+            style="background:#f5f5f5;border:none;border-radius:10px;padding:10px 14px;
+                   cursor:pointer;font-size:0.85rem;font-family:'Outfit',sans-serif;">
+            Cancel
+          </button>
+        </div>
+        ${existing ? `<button onclick="clearAIKey()"
+          style="width:100%;margin-top:8px;background:none;border:1px solid #f5c6cb;
+                 color:#d9534f;border-radius:10px;padding:8px;font-size:0.78rem;
+                 cursor:pointer;font-family:'Outfit',sans-serif;">
+          🗑 Remove saved key
+        </button>` : ''}
+        <div style="margin-top:10px;font-size:0.7rem;color:#aaa;text-align:center;">
+          Your key never leaves this device — it's stored in localStorage only.
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+  } else {
+    overlay.style.display = 'flex';
+  }
+  setTimeout(()=>document.getElementById('ai-key-input')?.focus(), 100);
+}
+
+function saveAIKey() {
+  const key = (document.getElementById('ai-key-input')?.value || '').trim();
+  if (!key || !key.startsWith('sk-ant-')) {
+    alert('Please enter a valid Anthropic API key (starts with sk-ant-)');
+    return;
+  }
+  localStorage.setItem('farmdesk_claude_key', key);
+  document.getElementById('ai-key-overlay')?.remove();
+  // Update button indicator
+  const btn = document.getElementById('ai-key-btn');
+  if (btn) { btn.textContent = '⚙ Key ✓'; btn.style.background = 'rgba(255,255,255,0.3)'; }
+  addAIMessage('bot', '🔑 API key saved! Ask me anything about your farm.');
+  // Re-send queued question if any
+  const inp = document.getElementById('ai-input');
+  if (inp && inp.value.trim()) { sendAIMessage(); }
+}
+
+function clearAIKey() {
+  localStorage.removeItem('farmdesk_claude_key');
+  document.getElementById('ai-key-overlay')?.remove();
+  const btn = document.getElementById('ai-key-btn');
+  if (btn) { btn.textContent = '⚙ API Key'; btn.style.background = 'rgba(255,255,255,0.18)'; }
+  addAIMessage('bot', '🔑 API key removed. Tap <strong>⚙ API Key</strong> to add a new one.');
+}
+
+// On panel open, show key indicator if key already saved
+function updateKeyIndicator() {
+  const btn = document.getElementById('ai-key-btn');
+  if (!btn) return;
+  if (localStorage.getItem('farmdesk_claude_key')) {
+    btn.textContent = '⚙ Key ✓';
+    btn.style.background = 'rgba(255,255,255,0.3)';
+  }
 }
 </script>
 
