@@ -18,9 +18,15 @@
   object-src 'none';
 "/>
 <title>FarmDesk — Farm Management</title>
-<!-- Firebase Auth SDK -->
-<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<!-- Firebase Modular SDK v9 -->
+<script type="module">
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+  import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+
+  // Wait for Firebase config to be available
+  window._firebaseModuleReady = { initializeApp, getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut };
+  document.dispatchEvent(new Event('firebaseModuleReady'));
+</script>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,700;1,500&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -4746,38 +4752,79 @@ const FIREBASE_BASE = "https://firestore.googleapis.com/v1/projects/" + FIREBASE
 const FIREBASE_API_KEY = FIREBASE_CONFIG.apiKey;
 
 // ============ GOOGLE AUTH ============
-// ⚠️ IMPORTANT: Replace with YOUR Google account email
+// ⚠️ Replace with YOUR Google account email
 const ALLOWED_EMAIL = 'YOUR_EMAIL@gmail.com';
 
 let currentUser = null;
 let authIdToken = null;
+let _firebaseAuth = null;
 
-// Init Firebase app for Auth only
-const firebaseApp = firebase.initializeApp(FIREBASE_CONFIG);
-const firebaseAuth = firebase.auth();
-
-firebaseAuth.onAuthStateChanged(async (user) => {
-  if (user) {
-    if (user.email !== ALLOWED_EMAIL) {
-      // Wrong account — sign out immediately
-      await firebaseAuth.signOut();
-      showAuthError('❌ Access denied. Only the authorised account can access FarmDesk.');
-      return;
-    }
-    // Authorised user
-    currentUser = user;
-    authIdToken = await user.getIdToken();
-    // Refresh token every 50 mins (tokens expire after 1hr)
-    setInterval(async () => {
-      if (currentUser) authIdToken = await currentUser.getIdToken(true);
-    }, 50 * 60 * 1000);
-    hideAuthScreen(user);
-  } else {
-    currentUser = null;
-    authIdToken = null;
-    showAuthScreen();
+async function initFirebaseAuth() {
+  // Wait for module to load if not ready yet
+  if (!window._firebaseModuleReady) {
+    await new Promise(resolve => document.addEventListener('firebaseModuleReady', resolve, { once: true }));
   }
-});
+  const { initializeApp, getAuth, GoogleAuthProvider, signInWithPopup, getRedirectResult, onAuthStateChanged, signOut } = window._firebaseModuleReady;
+
+  const app = initializeApp(FIREBASE_CONFIG);
+  _firebaseAuth = getAuth(app);
+
+  // Check for redirect result first
+  try {
+    const result = await getRedirectResult(_firebaseAuth);
+    if (result && result.user) {
+      console.log('Redirect result user:', result.user.email);
+    }
+  } catch(e) {
+    console.warn('getRedirectResult error:', e.code, e.message);
+    if (e.code !== 'auth/no-current-user' && e.code !== 'auth/null-user') {
+      showAuthError('Sign-in error: ' + e.message);
+    }
+  }
+
+  onAuthStateChanged(_firebaseAuth, async (user) => {
+    if (user) {
+      if (user.email !== ALLOWED_EMAIL) {
+        await signOut(_firebaseAuth);
+        showAuthError('❌ Access denied. Only the authorised account can access FarmDesk.');
+        return;
+      }
+      currentUser = user;
+      authIdToken = await user.getIdToken();
+      setInterval(async () => {
+        if (currentUser) authIdToken = await currentUser.getIdToken(true);
+      }, 50 * 60 * 1000);
+      hideAuthScreen(user);
+    } else {
+      currentUser = null;
+      authIdToken = null;
+      showAuthScreen();
+    }
+  });
+
+  // Expose sign-in/out globally
+  window.signInWithGoogle = async function() {
+    const loading = document.getElementById('auth-loading');
+    const errEl   = document.getElementById('auth-error');
+    if (loading) loading.style.display = 'block';
+    if (errEl)   errEl.style.display   = 'none';
+    try {
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
+      await signInWithPopup(_firebaseAuth, provider);
+    } catch(e) {
+      if (loading) loading.style.display = 'none';
+      showAuthError('Sign-in failed: ' + (e.message || e));
+    }
+  };
+
+  window.signOutGoogle = async function() {
+    await signOut(_firebaseAuth);
+  };
+}
+
+// Start auth init immediately
+initFirebaseAuth();
 
 function showAuthScreen() {
   const s = document.getElementById('auth-screen');
@@ -4787,7 +4834,6 @@ function showAuthScreen() {
 function hideAuthScreen(user) {
   const s = document.getElementById('auth-screen');
   if (s) s.style.display = 'none';
-  // Show user badge in top-right corner
   addUserBadge(user);
 }
 
@@ -4799,7 +4845,7 @@ function addUserBadge(user) {
     badge.className = 'auth-user-badge';
     badge.title = 'Signed in as ' + user.email;
     badge.onclick = () => {
-      if (confirm('Sign out of FarmDesk?\n\n' + user.email)) signOutGoogle();
+      if (confirm('Sign out of FarmDesk?\n\n' + user.email)) window.signOutGoogle();
     };
     document.body.appendChild(badge);
   }
@@ -4809,43 +4855,11 @@ function addUserBadge(user) {
     + `<span>${user.displayName ? user.displayName.split(' ')[0] : user.email}</span>`;
 }
 
-async function signInWithGoogle() {
-  const loading = document.getElementById('auth-loading');
-  const errEl   = document.getElementById('auth-error');
-  if (loading) loading.style.display = 'block';
-  if (errEl)   errEl.style.display   = 'none';
-  try {
-    const provider = new firebase.auth.GoogleAuthProvider();
-    provider.setCustomParameters({ prompt: 'select_account' });
-    await firebaseAuth.signInWithRedirect(provider);
-  } catch(e) {
-    if (loading) loading.style.display = 'none';
-    showAuthError('Sign-in failed: ' + (e.message || e));
-  }
-}
-
-// Handle redirect result on page load
-firebaseAuth.getRedirectResult().then(result => {
-  if (result && result.user) {
-    // Auth state change handler will pick this up automatically
-    console.log('Redirect sign-in successful:', result.user.email);
-  }
-}).catch(e => {
-  if (e.code !== 'auth/no-current-user') {
-    showAuthError('Sign-in failed: ' + (e.message || e));
-  }
-});
-
-async function signOutGoogle() {
-  await firebaseAuth.signOut();
-}
-
 function showAuthError(msg) {
   const el = document.getElementById('auth-error');
   if (el) { el.textContent = msg; el.style.display = 'block'; }
 }
 
-// Override fbWrite and fbRead to use Auth token when available
 async function getAuthHeaders() {
   if (authIdToken) {
     return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authIdToken };
